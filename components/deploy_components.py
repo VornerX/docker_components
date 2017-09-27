@@ -34,22 +34,21 @@ class DeploymentComponent(ABC):
 class DeployMySQL(DeploymentComponent):
 
     def __init__(self, container_name, image_name, local_port, docker_port,
-                 mysql_pwd, mysql_port):
+                 mysql_pwd):
         self._mysql_pwd = mysql_pwd
-        self._mysql_port = mysql_port
         super().__init__(container_name, image_name, local_port, docker_port)
 
     def create(self):
         print('Start deploying of MySQL container.\r\n')
         mysql_container = client.api.create_container(
-            name='deployer_mysql57',
-            image='centos/mysql-57-centos7',
+            name=self.container_name,
+            image=self.image_name,
             environment={
-                'MYSQL_ROOT_PASSWORD': 'root',
+                'MYSQL_ROOT_PASSWORD': self._mysql_pwd,
             },
-            ports=[3306],
+            ports=[self.docker_port],
             host_config=client.api.create_host_config(port_bindings={
-                3306: 3370
+                self.docker_port: self.local_port
             }),
         )
         client.api.start(mysql_container)
@@ -69,7 +68,7 @@ class DeployGraylog(DeploymentComponent):
 
         # elastic search
         es_container = client.api.create_container(
-            name='deployer_elastic_search',
+            name='1_deployer_elastic_search',
             image='elasticsearch:2',
             environment={},
             ports=[9200],
@@ -79,11 +78,9 @@ class DeployGraylog(DeploymentComponent):
         )
         client.api.start(es_container)
 
-
-
         # mongodb
         mongodb_container = client.api.create_container(
-            name='deployer_mongodb',
+            name='1_deployer_mongodb',
             image='mongo:2.6',
             environment={},
             ports=[27017],
@@ -94,8 +91,31 @@ class DeployGraylog(DeploymentComponent):
         client.api.start(mongodb_container)
 
         # graylog
+        graylog_container = client.api.create_container(
+            name='1_deployer_graylog',
+            image='graylog2/server',
+            environment={
+                'GRAYLOG_WEB_ENDPOINT_URI': 'http://127.0.0.1:9000/api'
+            },
+            ports=[self.docker_port],
+            host_config=client.api.create_host_config(port_bindings={
+                self.docker_port: self.local_port,
+                '12201/udp': '12201/udp',
+            }),
+        )
 
-        # self.inspect_after_start()
+        client.api.create_network("deployer_network", driver="bridge")
+        client.api.connect_container_to_network(
+            net_id='deployer_network', container=graylog_container,
+            links={
+                '1_deployer_elastic_search': 'elasticsearch',  # name: alias
+                '1_deployer_mongodb': 'mongodb'
+            }
+        )
+
+        client.api.start(graylog_container)
+
+        self.inspect_after_start()
 
 
 class DeployFeedbackApi(DeploymentComponent):

@@ -18,25 +18,24 @@ def run_deployment():
         local_port=CONTAINERS_SETTINGS['MYSQL']['LOCAL_PORT'],
         docker_port=CONTAINERS_SETTINGS['MYSQL']['DOCKER_PORT'],
         mysql_pwd=CONTAINERS_SETTINGS['MYSQL']['MYSQL_ROOT_PASSWORD'],
-        mysql_port=CONTAINERS_SETTINGS['MYSQL']['DOCKER_PORT']
     )
 
     graylog_dep = DeployGraylog(
-        container_name='deployer_graylog',
-        image_name='',
-        local_port='',
-        docker_port=''
+        container_name='1_deployer_graylog',
+        image_name='graylog2/server',
+        local_port=9000,
+        docker_port=9000
     )
 
     sso_dep = DeploySSO(
-        container_name='deployer_sso',
+        container_name='1_deployer_sso',
         image_name='',
         local_port=10180,
         docker_port=81
     )
 
     feedback_dep = DeployFeedbackApi(
-        container_name='deployer_feedback',
+        container_name='1_deployer_feedback',
         image_name='',
         local_port=10181,
         docker_port=81
