@@ -1,5 +1,7 @@
-from components.deploy_components import DeploymentComposite, DeployMySQL, \
-    DeployGraylog, DeploySSO
+from components.deploy_components import (
+    DeploymentComposite, DeployMySQL, DeployGraylog, DeploySSO,
+    DeployFeedbackApi, DeployXircleFeebackBundle
+)
 
 try:
     from config import CONTAINERS_SETTINGS
@@ -19,11 +21,32 @@ def run_deployment():
         mysql_port=CONTAINERS_SETTINGS['MYSQL']['DOCKER_PORT']
     )
 
-    sso_dep = DeploySSO('deployer_sso', '', '', '')
+    graylog_dep = DeployGraylog(
+        container_name='deployer_graylog',
+        image_name='',
+        local_port='',
+        docker_port=''
+    )
+
+    sso_dep = DeploySSO(
+        container_name='deployer_sso',
+        image_name='',
+        local_port=10180,
+        docker_port=81
+    )
+
+    feedback_dep = DeployFeedbackApi(
+        container_name='deployer_feedback',
+        image_name='',
+        local_port=10181,
+        docker_port=81
+    )
 
     deployment_composite.append_component([
         mysql_dep,
-        sso_dep
+        graylog_dep,
+        sso_dep,
+        feedback_dep
     ])
 
     deployment_composite.execute_deployment()

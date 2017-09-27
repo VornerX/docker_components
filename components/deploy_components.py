@@ -1,18 +1,30 @@
 from abc import ABC, abstractmethod
 from io import BytesIO
-from pprint import pprint
 import docker
+from helpers.color_print import ColorPrint
 
 client = docker.from_env()
+cprint = ColorPrint()
 
 
 class DeploymentComponent(ABC):
 
-    def __init__(self, container_name, image_name, docker_port, local_port):
-        self._image_name = image_name
-        self._container_name = container_name
-        self._docker_port = docker_port
-        self._local_port = local_port
+    def __init__(
+            self, container_name, image_name, docker_port, local_port):
+        self.image_name = image_name
+        self.container_name = container_name
+        self.docker_port = docker_port
+        self.local_port = local_port
+
+    def inspect_after_start(self):
+        inspect = client.api.inspect_container(self.container_name)
+        cprint.blue(
+            "{} (id: {}) started.\nIt's available at IP {} ({}).\r\n".format(
+                self.container_name,
+                inspect['Id'],
+                inspect['NetworkSettings']['IPAddress'],
+                inspect['NetworkSettings']['Ports']
+        ))
 
     @abstractmethod
     def create(self):
@@ -28,7 +40,7 @@ class DeployMySQL(DeploymentComponent):
         super().__init__(container_name, image_name, local_port, docker_port)
 
     def create(self):
-        print('Deploy MySQL container.\r\n')
+        print('Start deploying of MySQL container.\r\n')
         mysql_container = client.api.create_container(
             name='deployer_mysql57',
             image='centos/mysql-57-centos7',
@@ -41,25 +53,90 @@ class DeployMySQL(DeploymentComponent):
             }),
         )
         client.api.start(mysql_container)
+
+        # TODO: when (if) finished - move this to composite execute
+        self.inspect_after_start()
+
         # client.api.kill(mysql_container_id)
         # client.api.wait(mysql_container_id)
         # client.api.remove_container(mysql_container_id)
-
-        print(mysql_container)
+        # print(mysql_container)
 
 
 class DeployGraylog(DeploymentComponent):
     def create(self):
-        pass
+        print('Start deploying of Graylog container.\r\n')
+
+        # elastic search
+        es_container = client.api.create_container(
+            name='deployer_elastic_search',
+            image='elasticsearch:2',
+            environment={},
+            ports=[9200],
+            host_config=client.api.create_host_config(port_bindings={
+                9200: 9200
+            }),
+        )
+        client.api.start(es_container)
+
+
+
+        # mongodb
+        mongodb_container = client.api.create_container(
+            name='deployer_mongodb',
+            image='mongo:2.6',
+            environment={},
+            ports=[27017],
+            host_config=client.api.create_host_config(port_bindings={
+                27017: 27020
+            }),
+        )
+        client.api.start(mongodb_container)
+
+        # graylog
+
+        # self.inspect_after_start()
+
 
 class DeployFeedbackApi(DeploymentComponent):
-    pass
+    def create(self):
+        print('Start deploying of Feedback API container.\r\n')
+        with open('docker_files/feedback_local_Dockerfile',
+                  mode="r") as dockerfile:
+            f = BytesIO(dockerfile.read().encode('utf-8'))
+            try:
+                for line in client.api.build(
+                    fileobj=f,
+                    nocache=False,
+                    rm=True,
+                    tag='{}_image'.format(self.container_name),
+                    decode=True,
+                    pull=True
+                ):
+                    line = line.get('stream')
+                    if line is not None:
+                        cprint.green(line)
+            except Exception:
+                raise IOError("Invalid Dockerfile!")
+
+        feedback_container = client.api.create_container(
+            image='{}_image'.format(self.container_name),
+            name=self.container_name,
+            stdin_open=True, tty=True,
+            ports=[self.docker_port],
+            host_config=client.api.create_host_config(
+                port_bindings={self.docker_port: self.local_port}
+            ),
+            # environment=''
+        )
+        client.api.start(feedback_container)
+        self.inspect_after_start()
 
 
 class DeploySSO(DeploymentComponent):
 
     def create(self):
-
+        print('Start deploying of SSO container.\r\n')
         with open('docker_files/sso_local_Dockerfile', mode="r") as dockerfile:
             f = BytesIO(dockerfile.read().encode('utf-8'))
             try:
@@ -67,41 +144,42 @@ class DeploySSO(DeploymentComponent):
                     fileobj=f,
                     nocache=False,
                     rm=True,
-                    tag='sso_image',
+                    tag='{}_image'.format(self.container_name),
                     decode=True,
                     pull=True
                 ):
                     line = line.get('stream')
                     if line is not None:
-                        print(line)
+                        cprint.green(line)
             except Exception:
                 raise IOError("Invalid Dockerfile!")
 
         sso_container = client.api.create_container(
-            image='sso_image',
-            name='deployer_sso',
+            image='{}_image'.format(self.container_name),
+            name=self.container_name,
             stdin_open=True, tty=True,
-            ports=[8000],
+            ports=[self.docker_port],
             host_config=client.api.create_host_config(
-                port_bindings={8000: 8081}
+                port_bindings={self.docker_port: self.local_port}
             ),
             # environment=''
         )
 
         # get object by name
         # mysql_container = client.containers.get('deployer_mysql57')
-
-        client.api.connect_container_to_network(
-            net_id='dev_net', container=sso_container,
-            links={'deployer_mysql57': 'mysql'}  # name: alias
-        )
+        # client.api.create_network("dev_network", driver="bridge")
+        # client.api.connect_container_to_network(
+        #     net_id='dev_network', container=sso_container,
+        #     links={'deployer_mysql57': 'mysql'}  # name: alias
+        # )
 
         client.api.start(sso_container)
-
+        self.inspect_after_start()
 
 
 class DeployXircleFeebackBundle(DeploymentComponent):
-    pass
+    def create(self):
+        print('Start deploying of XircleFeebackBundle container.\r\n')
 
 
 class DeploymentComposite(object):
@@ -131,3 +209,4 @@ class DeploymentComposite(object):
         if self.components:
             for c in self.components:
                 c.create()
+                # c.inspect_after_start()
