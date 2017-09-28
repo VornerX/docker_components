@@ -1,6 +1,6 @@
 from components.deploy_components import (
     DeploymentComposite, DeployMySQL, DeployGraylog, DeploySSO,
-    DeployFeedbackApi, DeployXircleFeebackBundle
+    DeployFeedbackApi, DeployRabbitMQ, DeployXircleFeebackBundle
 )
 
 try:
@@ -12,37 +12,47 @@ except ImportError:
 def run_deployment():
     deployment_composite = DeploymentComposite()
 
+    # TODO: after finishing - move all settings to config
+
     mysql_dep = DeployMySQL(
-        container_name=CONTAINERS_SETTINGS['MYSQL']['MYSQL_CONTAINER_NAME'],
-        image_name=CONTAINERS_SETTINGS['MYSQL']['MYSQL_CONTAINER_IMAGE'],
-        local_port=CONTAINERS_SETTINGS['MYSQL']['LOCAL_PORT'],
-        docker_port=CONTAINERS_SETTINGS['MYSQL']['DOCKER_PORT'],
-        mysql_pwd=CONTAINERS_SETTINGS['MYSQL']['MYSQL_ROOT_PASSWORD'],
+        container_name='1_deployer_mysql57',
+        image_name='centos/mysql-57-centos7',
+        docker_port=3306,
+        localhost_port=3370,
+        mysql_pwd='root',
+    )
+
+    rabbitmq_dep = DeployRabbitMQ(
+        container_name='1_deployer_rabbitmq',
+        image_name='rabbitmq:3-management',
+        docker_port=15672,
+        localhost_port=15675,
     )
 
     graylog_dep = DeployGraylog(
         container_name='1_deployer_graylog',
         image_name='graylog2/server',
-        local_port=9000,
-        docker_port=9000
+        docker_port=9000,
+        localhost_port=9000,
     )
 
     sso_dep = DeploySSO(
         container_name='1_deployer_sso',
-        image_name='',
-        local_port=10180,
-        docker_port=81
+        image_name='sso',
+        docker_port=81,
+        localhost_port=10180
     )
 
     feedback_dep = DeployFeedbackApi(
         container_name='1_deployer_feedback',
-        image_name='',
-        local_port=10181,
-        docker_port=81
+        image_name='feedback',
+        docker_port=81,
+        localhost_port=10181
     )
 
     deployment_composite.append_component([
         mysql_dep,
+        rabbitmq_dep,
         graylog_dep,
         sso_dep,
         feedback_dep

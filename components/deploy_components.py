@@ -10,11 +10,11 @@ cprint = ColorPrint()
 class DeploymentComponent(ABC):
 
     def __init__(
-            self, container_name, image_name, docker_port, local_port):
+            self, container_name, image_name, docker_port, localhost_port):
         self.image_name = image_name
         self.container_name = container_name
+        self.localhost_port = localhost_port
         self.docker_port = docker_port
-        self.local_port = local_port
 
     def inspect_after_start(self):
         inspect = client.api.inspect_container(self.container_name)
@@ -33,10 +33,11 @@ class DeploymentComponent(ABC):
 
 class DeployMySQL(DeploymentComponent):
 
-    def __init__(self, container_name, image_name, local_port, docker_port,
+    def __init__(self, container_name, image_name, docker_port, localhost_port,
                  mysql_pwd):
         self._mysql_pwd = mysql_pwd
-        super().__init__(container_name, image_name, local_port, docker_port)
+        super().__init__(
+            container_name, image_name, docker_port, localhost_port)
 
     def create(self):
         print('Start deploying of MySQL container.\r\n')
@@ -48,7 +49,7 @@ class DeployMySQL(DeploymentComponent):
             },
             ports=[self.docker_port],
             host_config=client.api.create_host_config(port_bindings={
-                self.docker_port: self.local_port
+                self.docker_port: self.localhost_port
             }),
         )
         client.api.start(mysql_container)
@@ -60,6 +61,20 @@ class DeployMySQL(DeploymentComponent):
         # client.api.wait(mysql_container_id)
         # client.api.remove_container(mysql_container_id)
         # print(mysql_container)
+
+
+class DeployRabbitMQ(DeploymentComponent):
+    def create(self):
+        rabbitmq_container = client.api.create_container(
+            name=self.container_name,
+            image=self.image_name,
+            environment={},
+            ports=[self.docker_port],
+            host_config=client.api.create_host_config(port_bindings={
+                self.docker_port: self.localhost_port
+            }),
+        )
+        client.api.start(rabbitmq_container)
 
 
 class DeployGraylog(DeploymentComponent):
@@ -99,19 +114,19 @@ class DeployGraylog(DeploymentComponent):
             },
             ports=[self.docker_port],
             host_config=client.api.create_host_config(port_bindings={
-                self.docker_port: self.local_port,
+                self.docker_port: self.localhost_port,
                 '12201/udp': '12201/udp',
             }),
         )
 
-        client.api.create_network("deployer_network", driver="bridge")
-        client.api.connect_container_to_network(
-            net_id='deployer_network', container=graylog_container,
-            links={
-                '1_deployer_elastic_search': 'elasticsearch',  # name: alias
-                '1_deployer_mongodb': 'mongodb'
-            }
-        )
+        # client.api.create_network("deployer_network", driver="bridge")
+        # client.api.connect_container_to_network(
+        #     net_id='deployer_network', container=graylog_container,
+        #     links={
+        #         '1_deployer_elastic_search': 'elasticsearch',  # name: alias
+        #         '1_deployer_mongodb': 'mongodb'
+        #     }
+        # )
 
         client.api.start(graylog_container)
 
@@ -145,7 +160,7 @@ class DeployFeedbackApi(DeploymentComponent):
             stdin_open=True, tty=True,
             ports=[self.docker_port],
             host_config=client.api.create_host_config(
-                port_bindings={self.docker_port: self.local_port}
+                port_bindings={self.docker_port: self.localhost_port}
             ),
             # environment=''
         )
@@ -180,7 +195,7 @@ class DeploySSO(DeploymentComponent):
             stdin_open=True, tty=True,
             ports=[self.docker_port],
             host_config=client.api.create_host_config(
-                port_bindings={self.docker_port: self.local_port}
+                port_bindings={self.docker_port: self.localhost_port}
             ),
             # environment=''
         )
