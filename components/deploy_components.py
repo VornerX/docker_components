@@ -1,10 +1,36 @@
 from abc import ABC, abstractmethod
 from io import BytesIO
+import json
 import docker
 from helpers.color_print import ColorPrint
+from config import COMMANDS, CONTAINERS, GIT_REPOSITORIES
 
 client = docker.from_env()
 cprint = ColorPrint()
+
+
+def prepare_images():
+    """ Pull images if they're doesn't exists locally. """
+    images_to_prepare = [
+        v['IMAGE_NAME'] for k, v in CONTAINERS.items()
+        if 'IMAGE_NAME' in v.keys()
+    ]
+    for image_name in images_to_prepare:
+        for s in client.api.pull(image_name, stream=True):
+            resp = json.loads(s.decode().replace('\r\n', ''))
+            if 'progressDetail' not in resp.keys():
+                print(str.format('[{}]', resp['status']))
+            else:
+                print(str.format('[{}] Progress: {}',
+                                 resp['status'], resp['progressDetail']))
+
+
+# def prepare_network():
+#     for net in client.api.networks():
+#         if net['Name'] not in ('bridge', 'host', 'none'):
+#             client.api.remove_network(net['Id'])
+#
+#     client.api.create_network("deployer_network", driver="bridge")
 
 
 class DeploymentComponent(ABC):
@@ -51,11 +77,23 @@ class DeployMySQL(DeploymentComponent):
             host_config=client.api.create_host_config(port_bindings={
                 self.docker_port: self.localhost_port
             }),
+            hostname=self.container_name
+            # user='root'
         )
         client.api.start(mysql_container)
 
+        # client.api.connect_container_to_network(
+        #     net_id='deployer_network', container=self.container_name,
+        #     aliases=[self.container_name]
+        #     # links={
+        #     #     '1_deployer_elastic_search': 'elasticsearch',  # name: alias
+        #     #     '1_deployer_mongodb': 'mongodb'
+        #     # }
+        # )
+
         # TODO: when (if) finished - move this to composite execute
         self.inspect_after_start()
+
 
         # client.api.kill(mysql_container_id)
         # client.api.wait(mysql_container_id)
@@ -73,8 +111,17 @@ class DeployRabbitMQ(DeploymentComponent):
             host_config=client.api.create_host_config(port_bindings={
                 self.docker_port: self.localhost_port
             }),
+            hostname=self.container_name,
+            user='root'
         )
         client.api.start(rabbitmq_container)
+
+        # client.api.connect_container_to_network(
+        #     net_id='deployer_network', container=self.container_name,
+        #     aliases=[self.container_name]
+        # )
+
+        self.inspect_after_start()
 
 
 class DeployGraylog(DeploymentComponent):
@@ -107,8 +154,8 @@ class DeployGraylog(DeploymentComponent):
 
         # graylog
         graylog_container = client.api.create_container(
-            name='1_deployer_graylog',
-            image='graylog2/server',
+            name=self.container_name,
+            image=self.image_name,
             environment={
                 'GRAYLOG_WEB_ENDPOINT_URI': 'http://127.0.0.1:9000/api'
             },
@@ -118,16 +165,6 @@ class DeployGraylog(DeploymentComponent):
                 '12201/udp': '12201/udp',
             }),
         )
-
-        # client.api.create_network("deployer_network", driver="bridge")
-        # client.api.connect_container_to_network(
-        #     net_id='deployer_network', container=graylog_container,
-        #     links={
-        #         '1_deployer_elastic_search': 'elasticsearch',  # name: alias
-        #         '1_deployer_mongodb': 'mongodb'
-        #     }
-        # )
-
         client.api.start(graylog_container)
 
         self.inspect_after_start()
@@ -154,17 +191,26 @@ class DeployFeedbackApi(DeploymentComponent):
             except Exception:
                 raise IOError("Invalid Dockerfile!")
 
+        local_dir = GIT_REPOSITORIES['feedback-api-python']['local_dir']
+
         feedback_container = client.api.create_container(
             image='{}_image'.format(self.container_name),
             name=self.container_name,
             stdin_open=True, tty=True,
             ports=[self.docker_port],
             host_config=client.api.create_host_config(
-                port_bindings={self.docker_port: self.localhost_port}
+                port_bindings={self.docker_port: self.localhost_port},
+                binds={
+                    local_dir: {
+                        'bind': '/feedback-api-python',
+                        'mode': 'rw',
+                    }
+                }
             ),
             # environment=''
         )
         client.api.start(feedback_container)
+
         self.inspect_after_start()
 
 
@@ -189,17 +235,31 @@ class DeploySSO(DeploymentComponent):
             except Exception:
                 raise IOError("Invalid Dockerfile!")
 
+        local_dir = GIT_REPOSITORIES['sso']['local_dir']
+
         sso_container = client.api.create_container(
             image='{}_image'.format(self.container_name),
             name=self.container_name,
             stdin_open=True, tty=True,
             ports=[self.docker_port],
             host_config=client.api.create_host_config(
-                port_bindings={self.docker_port: self.localhost_port}
+                port_bindings={self.docker_port: self.localhost_port},
+                binds={
+                    local_dir: {
+                        'bind': '/sso',
+                        'mode': 'rw',
+                    }
+                }
             ),
-            # environment=''
+            environment={
+                'MYSQL_HOST': '172.17.0.2',
+                'MYSQL_PWD': 'root'
+            },
+            hostname='sso',
+            user='root',
         )
 
+        client.api.start(sso_container)
         # get object by name
         # mysql_container = client.containers.get('deployer_mysql57')
         # client.api.create_network("dev_network", driver="bridge")
@@ -208,7 +268,60 @@ class DeploySSO(DeploymentComponent):
         #     links={'deployer_mysql57': 'mysql'}  # name: alias
         # )
 
-        client.api.start(sso_container)
+        venv_commands = [
+            'mysql -e \"create database if not exists sso\";',
+            'cd sso;',
+            'cp autodeployment/sso_local_nginx.conf /etc/nginx/conf.d/;'
+            'python3.4 setup.py venv;',
+            'source dist/env/bin/activate;',
+            'python setup.py develop;',
+            'python setup.py uncomment_local_config_files;',
+            'deactivate;'
+        ]
+
+        deploy_commands = [
+            'cd sso/autodeployment;',
+            'sso-mgm check;',
+            'sso-mgm migrate;',
+            'npm install -g bower && sso-mgm bower_install -- --allow-root;',
+            'sso-mgm loaddata app_local.json;',
+            'sso-mgm loaddata app_group_local.json;',
+            'sso-mgm loaddata enterprise_local.json;',
+            "sso-mgm loaddata user_local.json;"
+        ]
+
+        server_commands = [
+            'sso-mgm collectstatic --noinput;',
+            'sso-uwsgi start;',
+            'nginx'
+        ]
+
+        sso_con = client.containers.get(sso_container['Id'])
+
+        response = sso_con.exec_run(
+            cmd="bash -c '" + " ".join(venv_commands) + "'", stream=True)
+        for r in response:
+            cprint.yellow(r.decode())
+
+        response = sso_con.exec_run(
+            cmd="bash -c '" + " ".join(deploy_commands) + "'", stream=True)
+        for r in response:
+            cprint.yellow(r.decode())
+
+        response = sso_con.exec_run(
+            cmd="bash -c '" + " ".join(server_commands) + "'", stream=True)
+        for r in response:
+            cprint.yellow(r.decode())
+
+        # for command in venv_commands:
+        #     sso_con.exec_run(cmd=command, stream=True)
+        #
+        # for command in deploy_commands:
+        #     sso_con.exec_run(cmd=command, stream=True)
+        #
+        # for command in server_commands:
+        #     sso_con.exec_run(cmd=command, stream=True)
+
         self.inspect_after_start()
 
 

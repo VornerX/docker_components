@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 from components.deploy_operations import run_deployment
 
 
