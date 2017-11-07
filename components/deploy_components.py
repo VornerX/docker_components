@@ -1,9 +1,10 @@
 from abc import ABC, abstractmethod
+from time import sleep
 from io import BytesIO
 import json
 import docker
 from helpers.color_print import ColorPrint
-from config import COMMANDS, CONTAINERS, GIT_REPOSITORIES
+from config import CONTAINERS, GIT_REPOSITORIES
 
 client = docker.from_env()
 cprint = ColorPrint()
@@ -50,7 +51,25 @@ class DeploymentComponent(ABC):
                 inspect['Id'],
                 inspect['NetworkSettings']['IPAddress'],
                 inspect['NetworkSettings']['Ports']
-        ))
+            ))
+
+    def exec_cmd(self, container_name, cmd):
+
+        container = client.containers.get(container_name)
+
+        if isinstance(cmd, list):
+            response = container.exec_run(
+                cmd="bash -c '" + " ".join(cmd) + "'", stream=True)
+            for r in response:
+                cprint.yellow(r.decode())
+
+        elif isinstance(cmd, str):
+            response = container.exec_run(
+                cmd=str.format("bash -c '{}'", cmd), stream=True)
+            for r in response:
+                cprint.yellow(r.decode())
+        else:
+            raise TypeError("'cmd' parameter must me list or str.")
 
     @abstractmethod
     def create(self):
@@ -66,7 +85,7 @@ class DeployMySQL(DeploymentComponent):
             container_name, image_name, docker_port, localhost_port)
 
     def create(self):
-        print('Start deploying of MySQL container.\r\n')
+        print('\r\nStart deploying of MySQL container.\r\n')
         mysql_container = client.api.create_container(
             name=self.container_name,
             image=self.image_name,
@@ -78,7 +97,6 @@ class DeployMySQL(DeploymentComponent):
                 self.docker_port: self.localhost_port
             }),
             hostname=self.container_name
-            # user='root'
         )
         client.api.start(mysql_container)
 
@@ -86,7 +104,7 @@ class DeployMySQL(DeploymentComponent):
         #     net_id='deployer_network', container=self.container_name,
         #     aliases=[self.container_name]
         #     # links={
-        #     #     '1_deployer_elastic_search': 'elasticsearch',  # name: alias
+        #     #     '1_deployer_elastic_search': 'elasticsearch',
         #     #     '1_deployer_mongodb': 'mongodb'
         #     # }
         # )
@@ -94,6 +112,12 @@ class DeployMySQL(DeploymentComponent):
         # TODO: when (if) finished - move this to composite execute
         self.inspect_after_start()
 
+        print('Waiting for MySQL server starts...\r\n')
+        sleep(7)
+        self.exec_cmd(
+            container_name=self.container_name,
+            cmd='mysql -u root -e "create database if not exists sso;"'
+        )
 
         # client.api.kill(mysql_container_id)
         # client.api.wait(mysql_container_id)
@@ -217,7 +241,7 @@ class DeployFeedbackApi(DeploymentComponent):
 class DeploySSO(DeploymentComponent):
 
     def create(self):
-        print('Start deploying of SSO container.\r\n')
+        print('\r\nStart deploying of SSO container.\r\n')
         with open('docker_files/sso_local_Dockerfile', mode="r") as dockerfile:
             f = BytesIO(dockerfile.read().encode('utf-8'))
             try:
@@ -252,6 +276,10 @@ class DeploySSO(DeploymentComponent):
                 }
             ),
             environment={
+                # TODO: this shit 'CONTAINER' are linked in Dockerfile from
+                # TODO: autodeployment_settings.py inside SSO project.
+                # TODO: rename it to DB_NAME or something like this.
+                'CONTAINER': 'sso',
                 'MYSQL_HOST': '172.17.0.2',
                 'MYSQL_PWD': 'root'
             },
@@ -269,7 +297,6 @@ class DeploySSO(DeploymentComponent):
         # )
 
         venv_commands = [
-            'mysql -e \"create database if not exists sso\";',
             'cd sso;',
             'cp autodeployment/sso_local_nginx.conf /etc/nginx/conf.d/;'
             'python3.4 setup.py venv;',
@@ -278,6 +305,7 @@ class DeploySSO(DeploymentComponent):
             'python setup.py uncomment_local_config_files;',
             'deactivate;'
         ]
+        self.exec_cmd(self.container_name, venv_commands)
 
         deploy_commands = [
             'cd sso/autodeployment;',
@@ -289,38 +317,16 @@ class DeploySSO(DeploymentComponent):
             'sso-mgm loaddata enterprise_local.json;',
             "sso-mgm loaddata user_local.json;"
         ]
+        self.exec_cmd(self.container_name, deploy_commands)
 
+        # TODO: in a case of dev environment, maybe start it
+        # TODO: with Django development server?
         server_commands = [
             'sso-mgm collectstatic --noinput;',
             'sso-uwsgi start;',
             'nginx'
         ]
-
-        sso_con = client.containers.get(sso_container['Id'])
-
-        response = sso_con.exec_run(
-            cmd="bash -c '" + " ".join(venv_commands) + "'", stream=True)
-        for r in response:
-            cprint.yellow(r.decode())
-
-        response = sso_con.exec_run(
-            cmd="bash -c '" + " ".join(deploy_commands) + "'", stream=True)
-        for r in response:
-            cprint.yellow(r.decode())
-
-        response = sso_con.exec_run(
-            cmd="bash -c '" + " ".join(server_commands) + "'", stream=True)
-        for r in response:
-            cprint.yellow(r.decode())
-
-        # for command in venv_commands:
-        #     sso_con.exec_run(cmd=command, stream=True)
-        #
-        # for command in deploy_commands:
-        #     sso_con.exec_run(cmd=command, stream=True)
-        #
-        # for command in server_commands:
-        #     sso_con.exec_run(cmd=command, stream=True)
+        self.exec_cmd(self.container_name, server_commands)
 
         self.inspect_after_start()
 
