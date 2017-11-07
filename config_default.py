@@ -37,9 +37,3 @@ CONTAINERS = {
     'SSO': {}
 }
 
-COMMANDS = {
-    'sso': (
-        'ping -c 3 deployer_mysql > /ping_test.txt',
-    ),
-    'feedback_api':()
-}
