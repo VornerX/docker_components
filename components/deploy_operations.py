@@ -1,6 +1,6 @@
 from components.deploy_components import (
-    DeploymentComposite, DeployMySQL, DeploySSO,
-    DeployRabbitMQ, prepare_images,  # prepare_network
+    DeploymentComposite, DeployMySQL, DeploySSO, DeployFeedbackApi,
+    DeployRabbitMQ, DeployXircleFeebackBundle, prepare_images
 )
 from helpers.git_operations import clone_repositories
 
@@ -48,19 +48,19 @@ def run_deployment():
     #     localhost_port=9000,
     # )
 
-    #
-    # feedback_dep = DeployFeedbackApi(
-    #     container_name='deployer_feedback',
-    #     image_name='feedback',
-    #     docker_port=81,
-    #     localhost_port=10181
-    # )
+
+    feedback_dep = DeployFeedbackApi(
+        container_name='deployer_feedback',
+        image_name='feedback',
+        docker_port=81,
+        localhost_port=10181
+    )
 
     deployment_composite.append_component([
         mysql_dep,
         rabbitmq_dep,
         sso_dep,
-        # feedback_dep
+        feedback_dep
     ])
 
     deployment_composite.execute_deployment()

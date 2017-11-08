@@ -2,9 +2,10 @@ from abc import ABC, abstractmethod
 from time import sleep
 from io import BytesIO
 import json
+import os
 import docker
 from helpers.color_print import ColorPrint
-from config import CONTAINERS, GIT_REPOSITORIES
+from config import CONTAINERS, GIT_REPOSITORIES, HOME_DEPLOYMENT_DIR
 
 client = docker.from_env()
 cprint = ColorPrint()
@@ -114,10 +115,14 @@ class DeployMySQL(DeploymentComponent):
 
         print('Waiting for MySQL server starts...\r\n')
         sleep(7)
-        self.exec_cmd(
-            container_name=self.container_name,
-            cmd='mysql -u root -e "create database if not exists sso;"'
-        )
+
+        for d in ('sso', 'feedback', 'feedback_default', 'demo'):
+            self.exec_cmd(
+                container_name=self.container_name,
+                cmd=str.format(
+                    'mysql -u root -e "create database if not exists {};"', d)
+            )
+
 
         # client.api.kill(mysql_container_id)
         # client.api.wait(mysql_container_id)
@@ -139,11 +144,6 @@ class DeployRabbitMQ(DeploymentComponent):
             user='root'
         )
         client.api.start(rabbitmq_container)
-
-        # client.api.connect_container_to_network(
-        #     net_id='deployer_network', container=self.container_name,
-        #     aliases=[self.container_name]
-        # )
 
         self.inspect_after_start()
 
@@ -195,6 +195,46 @@ class DeployGraylog(DeploymentComponent):
 
 
 class DeployFeedbackApi(DeploymentComponent):
+
+    def manage_access_code(self):
+        # TODO: refactor this
+        cprint.green('Generating access code')
+
+        check_access_code_cmd = """mysql --skip-column-names --silent -e "select token from sso.app_token where id=1;" """
+
+        access_code = None
+
+        response = self.exec_cmd(self.container_name, check_access_code_cmd)
+        if response:
+            for r in response:
+                if r:
+                    access_code = r.decode()
+
+        if not access_code:
+            self.exec_cmd(
+                'deployer_sso', 'sso-mgm accesscode -y -e 1 -a feedback')
+
+        response = self.exec_cmd(self.container_name, check_access_code_cmd)
+        if response:
+            for r in response:
+                if r:
+                    access_code = r.decode()
+
+        if not access_code:
+            raise Exception('Access code empty. Something goes wrong.')
+
+        access_code_filepath = os.path.join(
+            HOME_DEPLOYMENT_DIR, 'feedback_api', '.sso_access_code')
+
+        with open(file=access_code_filepath, mode='w') as access_code_file:
+            access_code_file.write(access_code)
+
+        response = self.exec_cmd(
+            self.container_name, 'fbapi-mgm generate_token')
+
+        for r in response:
+            cprint.cyan(r.decode())
+
     def create(self):
         print('Start deploying of Feedback API container.\r\n')
         with open('docker_files/feedback_local_Dockerfile',
@@ -231,9 +271,71 @@ class DeployFeedbackApi(DeploymentComponent):
                     }
                 }
             ),
-            # environment=''
+            environment={
+                'CONTAINER': 'feedback',  # db name
+                'GRAYLOG_IP': 'localhost',
+                'MYSQL_HOST': '172.17.0.2',  # 172.17.0.2
+                'SSO_CONTAINER': 'deployer_sso',
+                'SSO_PORT': '10180',
+                'SSO_IP': '172.17.0.4',
+                'MYSQL_PWD': 'root',
+                'PORT_TO_DEPLOY': '10181',
+                'RABBIT_MQ_IP': '172.17.0.3',
+            }
         )
+
         client.api.start(feedback_container)
+
+        prepare_app_commands = [
+            "cd feedback-api-python;",
+            "rm -rf feedback_api/dist;",
+            "rm -rf feedback_api/.config;",
+            "cp feedback_api/autodeployment/local_nginx.conf /etc/nginx/conf.d/;",
+            "cp feedback_api/autodeployment/crontab_local /etc/crontab;",
+            "python2.7 /get-pip.py;",
+            "python3.4 setup.py venv --project=feedback_api;",
+            "pip2.7 install fabric;",
+            "source feedback_api/dist/env/bin/activate;",
+            "python setup.py develop --project=feedback_api;",
+            "python setup.py uncomment_local_config --project=feedback_api;",
+            "python feedback_api/autodeployment/update_config_files.py;",
+            "fbapi-mgm check;"
+        ]
+        self.exec_cmd(self.container_name, prepare_app_commands)
+
+        db_commands = [
+            "fbapi-mgm migrate contenttypes --database=demo;",
+            "fbapi-mgm migrate contenttypes --database=default;",
+            "fbapi-mgm migrate model_generic --database=default;",
+            "fbapi-mgm migrate model --database=demo;",
+            "fbapi-mgm makeunit --db=demo --unitname=local_unit;",
+            "fbapi-mgm migrate model --database=demo;"
+        ]
+        self.exec_cmd(self.container_name, db_commands)
+
+        load_data_commands = [
+            "fbapi-mgm loaddata --app model --database demo channel;",
+            "fbapi-mgm loaddata --app model --database demo state;",
+            "fbapi-mgm loaddata --app model --database demo protocol;",
+            "fbapi-mgm loaddata --app model --database demo language;",
+            "fbapi-mgm loaddata --app model --database demo entity_lookup;",
+            "fbapi-mgm loaddata --app model --database demo deploy_initial_data;",
+            "fbapi-mgm makeconfig --db=demo;",
+            "fbapi-mgm makequesttype --db=demo;"
+        ]
+        self.exec_cmd(self.container_name, load_data_commands)
+
+        server_run_commands = [
+            "fbapi-mgm collectstatic --noinput;",
+            "fbapi-uwsgi start;",
+            "nginx;",
+            "usr/sbin/crond;",
+            "cd /feedback-api-python/feedback_api/autodeployment/;",
+            'python2.7 restart_celery.py'
+        ]
+        self.exec_cmd(self.container_name, server_run_commands)
+
+        self.manage_access_code()
 
         self.inspect_after_start()
 

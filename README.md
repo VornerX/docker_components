@@ -1,6 +1,6 @@
 Usage for Ubuntu:
 -----
-1. Install Docker CE lie it described here: https://docs.docker.com/engine/installation/linux/docker-ce/ubuntu/#install-docker-ce-1
+1. Install Docker CE like it described here: https://docs.docker.com/engine/installation/linux/docker-ce/ubuntu/#install-docker-ce-1
 2. Add current user to docker's group:
 ```
 sudo usermod -aG docker $USER
