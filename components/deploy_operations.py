@@ -1,44 +1,61 @@
 from components.deploy_components import (
     DeploymentComposite, DeployMySQL, DeploySSO, DeployFeedbackApi,
-    DeployRabbitMQ, DeployXircleFeebackBundle, prepare_images
+    DeployRabbitMQ, DeployXircleFeebackBundle, prepare_images, prepare_network
 )
 from helpers.git_operations import clone_repositories
-
+from helpers.color_print import ColorPrint
+cprint = ColorPrint()
 try:
     from config import CONTAINERS
 except ImportError:
-    print('You need to create config file, from example config_default.py')
+    cprint.red(
+        "Settings will be taken from default config but it's strongly "
+        "recommended to create your own config.py, based on it!")
+    from config_default import CONTAINERS
 
 
 def run_deployment():
 
+    prepare_network()
     prepare_images()
     clone_repositories()
 
     deployment_composite = DeploymentComposite()
 
-    # TODO: after finishing - move all settings to config
-
     mysql_dep = DeployMySQL(
-        container_name='deployer_mysql57',
-        image_name='centos/mysql-57-centos7',
-        docker_port=3306,
-        localhost_port=3370,
-        mysql_pwd='root',
+        container_name=CONTAINERS['MYSQL']['CONTAINER_NAME'],
+        image_name=CONTAINERS['MYSQL']['IMAGE_NAME'],
+        docker_port=CONTAINERS['MYSQL']['DOCKER_PORT'],
+        localhost_port=CONTAINERS['MYSQL']['LOCAL_PORT'],
+        mysql_pwd=CONTAINERS['MYSQL']['MYSQL_ROOT_PASSWORD']
     )
 
     rabbitmq_dep = DeployRabbitMQ(
-        container_name='deployer_rabbitmq',
-        image_name='rabbitmq:3-management',
-        docker_port=15672,
-        localhost_port=15675,
+        container_name=CONTAINERS['RABBITMQ']['CONTAINER_NAME'],
+        image_name=CONTAINERS['RABBITMQ']['IMAGE_NAME'],
+        docker_port=CONTAINERS['RABBITMQ']['DOCKER_PORT'],
+        localhost_port=CONTAINERS['RABBITMQ']['LOCAL_PORT'],
     )
 
     sso_dep = DeploySSO(
-        container_name='deployer_sso',
-        image_name='sso',
-        docker_port=81,
-        localhost_port=10180
+        container_name=CONTAINERS['SSO']['CONTAINER_NAME'],
+        image_name='sso',  # custom
+        docker_port=CONTAINERS['SSO']['DOCKER_PORT'],
+        localhost_port=CONTAINERS['SSO']['LOCAL_PORT']
+    )
+
+    feedback_dep = DeployFeedbackApi(
+        container_name=CONTAINERS['FEEDBACK_API']['CONTAINER_NAME'],
+        image_name='feedback',  # custom
+        docker_port=CONTAINERS['FEEDBACK_API']['DOCKER_PORT'],
+        localhost_port=CONTAINERS['FEEDBACK_API']['LOCAL_PORT']
+    )
+
+    xircle_feedback_bundle_dep = DeployXircleFeebackBundle(
+        container_name=CONTAINERS['XIRCL_FB_BUNDLE']['CONTAINER_NAME'],
+        image_name=CONTAINERS['XIRCL_FB_BUNDLE']['IMAGE_NAME'],
+        docker_port=CONTAINERS['XIRCL_FB_BUNDLE']['DOCKER_PORT'],
+        localhost_port=CONTAINERS['XIRCL_FB_BUNDLE']['LOCAL_PORT']
     )
 
     # graylog_dep = DeployGraylog(
@@ -47,21 +64,6 @@ def run_deployment():
     #     docker_port=9000,
     #     localhost_port=9000,
     # )
-
-
-    feedback_dep = DeployFeedbackApi(
-        container_name='deployer_feedback',
-        image_name='feedback',
-        docker_port=81,
-        localhost_port=10181
-    )
-
-    xircle_feedback_bundle_dep = DeployXircleFeebackBundle(
-        container_name='deployer_xircl_ui',
-        image_name='xircl_ui',
-        docker_port=8080,
-        localhost_port=8081
-    )
 
     deployment_composite.append_component([
         mysql_dep,

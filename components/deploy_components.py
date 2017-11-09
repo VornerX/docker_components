@@ -4,8 +4,11 @@ from io import BytesIO
 import json
 import os
 import docker
+from docker import types
 from helpers.color_print import ColorPrint
-from config import CONTAINERS, GIT_REPOSITORIES, HOME_DEPLOYMENT_DIR
+from config import (
+    DOCKER_NETWORK, CONTAINERS, GIT_REPOSITORIES, HOME_DEPLOYMENT_DIR
+)
 
 client = docker.from_env()
 cprint = ColorPrint()
@@ -27,12 +30,22 @@ def prepare_images():
                                  resp['status'], resp['progressDetail']))
 
 
-# def prepare_network():
-#     for net in client.api.networks():
-#         if net['Name'] not in ('bridge', 'host', 'none'):
-#             client.api.remove_network(net['Id'])
-#
-#     client.api.create_network("deployer_network", driver="bridge")
+def prepare_network():
+    for net in client.api.networks():
+        if net['Name'] == DOCKER_NETWORK['NETWORK_NAME']:
+            client.api.remove_network(net['Id'])
+
+    ipam_pool = docker.types.IPAMPool(
+        subnet=DOCKER_NETWORK['SUBNET'],
+        gateway=DOCKER_NETWORK['GATEWAY']
+    )
+
+    ipam_config = docker.types.IPAMConfig(
+        pool_configs=[ipam_pool]
+    )
+
+    client.api.create_network(
+        DOCKER_NETWORK['NETWORK_NAME'], driver="bridge", ipam=ipam_config)
 
 
 class DeploymentComponent(ABC):
@@ -87,6 +100,15 @@ class DeployMySQL(DeploymentComponent):
 
     def create(self):
         print('\r\nStart deploying of MySQL container.\r\n')
+
+        networking_config = client.api.create_networking_config({
+            'deployer_network': client.api.create_endpoint_config(
+                ipv4_address=CONTAINERS['MYSQL']['NETWORK']['IPV4_ADDRESS'],
+                aliases=CONTAINERS['MYSQL']['NETWORK']['HOSTNAME'],
+                links={'deployer_rabbitmq': 'deployer_rabbitmq'}
+            )
+        })
+
         mysql_container = client.api.create_container(
             name=self.container_name,
             image=self.image_name,
@@ -97,7 +119,9 @@ class DeployMySQL(DeploymentComponent):
             host_config=client.api.create_host_config(port_bindings={
                 self.docker_port: self.localhost_port
             }),
-            hostname=self.container_name
+            hostname=self.container_name,
+            domainname=self.container_name,
+            networking_config=networking_config
         )
         client.api.start(mysql_container)
 
@@ -132,6 +156,13 @@ class DeployMySQL(DeploymentComponent):
 
 class DeployRabbitMQ(DeploymentComponent):
     def create(self):
+        networking_config = client.api.create_networking_config({
+            'deployer_network': client.api.create_endpoint_config(
+                ipv4_address='192.168.1.3',
+                aliases=['deployer_rabbitmq', 'rabbitmqhost'],
+                links={'deployer_mysql57': 'deployer_mysql57'}
+            )
+        })
         rabbitmq_container = client.api.create_container(
             name=self.container_name,
             image=self.image_name,
@@ -141,7 +172,9 @@ class DeployRabbitMQ(DeploymentComponent):
                 self.docker_port: self.localhost_port
             }),
             hostname=self.container_name,
-            user='root'
+            user='root',
+            domainname=self.container_name,
+            networking_config=networking_config
         )
         client.api.start(rabbitmq_container)
 
@@ -335,7 +368,7 @@ class DeployFeedbackApi(DeploymentComponent):
         ]
         self.exec_cmd(self.container_name, server_run_commands)
 
-        self.manage_access_code()
+        # self.manage_access_code()
 
         self.inspect_after_start()
 
@@ -439,7 +472,7 @@ class DeployXircleFeebackBundle(DeploymentComponent):
 
         local_dir = GIT_REPOSITORIES['feedback_ui']['local_dir']
 
-        # Create local config.js
+        # TODO: move it to external file
         xircl_fb_config = """
 /* -----------------------------------------------------------------
 //
@@ -487,8 +520,6 @@ window.uxMetricsEnabled = false;""".format(
             except Exception:
                 raise IOError("Invalid Dockerfile!")
 
-
-
         xircl_fb_container = client.api.create_container(
             image='{}_image'.format(self.container_name),
             name=self.container_name,
@@ -508,7 +539,6 @@ window.uxMetricsEnabled = false;""".format(
         )
 
         client.api.start(xircl_fb_container)
-
 
 
 class DeploymentComposite(object):
