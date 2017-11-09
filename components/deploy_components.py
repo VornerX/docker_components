@@ -437,6 +437,79 @@ class DeployXircleFeebackBundle(DeploymentComponent):
     def create(self):
         print('Start deploying of XircleFeebackBundle container.\r\n')
 
+        local_dir = GIT_REPOSITORIES['feedback_ui']['local_dir']
+
+        # Create local config.js
+        xircl_fb_config = """
+/* -----------------------------------------------------------------
+//
+// `config.js` generated for Docker container
+//
+// ----------------------------------------------------------------- */
+
+// SSO URL
+window.ssoApiUrl = 'http://{sso_url}/api/';
+
+// Feedback REST API URL
+window.feedbackV2ApiUrl = 'http://{fbapi_url}/';
+
+// Xircl BaseURL
+window.xirclxirclfeedback = '/';
+
+// Analytics
+window.googleAnalyticsEnabled = false;
+window.uxMetricsEnabled = false;""".format(
+            sso_url='172.17.0.4', fbapi_url='172.17.0.3'
+        )
+
+        with open(
+            os.path.join(local_dir, 'Resources', 'public', 'js', 'config.js'),
+            mode='w'
+        ) as config_js:
+            config_js.write(xircl_fb_config)
+
+        with open(
+            'docker_files/xircl_fb_bundle_local_Dockerfile', mode="r"
+        ) as dockerfile:
+            f = BytesIO(dockerfile.read().encode('utf-8'))
+            try:
+                for line in client.api.build(
+                    fileobj=f,
+                    nocache=False,
+                    rm=True,
+                    tag='{}_image'.format(self.container_name),
+                    decode=True,
+                    pull=True
+                ):
+                    line = line.get('stream')
+                    if line is not None:
+                        cprint.green(line)
+            except Exception:
+                raise IOError("Invalid Dockerfile!")
+
+
+
+        xircl_fb_container = client.api.create_container(
+            image='{}_image'.format(self.container_name),
+            name=self.container_name,
+            stdin_open=True, tty=True,
+            ports=[self.docker_port],
+            host_config=client.api.create_host_config(
+                port_bindings={self.docker_port: self.localhost_port},
+                binds={
+                    local_dir: {
+                        'bind': '/XircleFeedbackBundle',
+                        'mode': 'rw',
+                    }
+                }
+            ),
+            hostname='xircl_fb',
+            user='root',
+        )
+
+        client.api.start(xircl_fb_container)
+
+
 
 class DeploymentComposite(object):
     def __init__(self):

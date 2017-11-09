@@ -56,11 +56,19 @@ def run_deployment():
         localhost_port=10181
     )
 
+    xircle_feedback_bundle_dep = DeployXircleFeebackBundle(
+        container_name='deployer_xircl_ui',
+        image_name='xircl_ui',
+        docker_port=8080,
+        localhost_port=8081
+    )
+
     deployment_composite.append_component([
         mysql_dep,
         rabbitmq_dep,
         sso_dep,
-        feedback_dep
+        feedback_dep,
+        xircle_feedback_bundle_dep
     ])
 
     deployment_composite.execute_deployment()
