@@ -57,16 +57,42 @@ class DeploymentComponent(ABC):
         self.container_name = container_name
         self.localhost_port = localhost_port
         self.docker_port = docker_port
+        self.report_string = None
 
     def inspect_after_start(self):
         inspect = client.api.inspect_container(self.container_name)
-        cprint.blue(
-            "{} (id: {}) started.\nIt's available at IP {} ({}).\r\n".format(
-                self.container_name,
-                inspect['Id'],
-                inspect['NetworkSettings']['IPAddress'],
-                inspect['NetworkSettings']['Ports']
-            ))
+        net_settings = inspect.get('NetworkSettings')
+
+        ipv4_address = net_settings[
+            'Networks'][DOCKER_NETWORK['NETWORK_NAME']]['IPAddress']
+
+        local_ports = []
+        for port in net_settings['Ports'].keys():
+            if net_settings['Ports'][port] is not None:
+                for p in net_settings['Ports'][port]:
+                    local_ports.append(p['HostPort'])
+
+        docker_ports = [
+            p.replace('/tcp', '') for p in net_settings['Ports'].keys()]
+
+        create_datetime = inspect['Created'].split('.')[0].replace('T', ' ')
+
+        self.report_string = str.format(
+            "Container '{}' successfully deployed\n"
+            "Container id: {}\n"
+            "Available at localhost as: http://{}:{}\n"
+            "Available inside Docker as: http://{}:{}\n"
+            "Create time: {}\r\n",
+            self.container_name,
+            inspect['Id'],
+            'localhost',
+            ', '.join(local_ports),
+            ipv4_address,
+            ', '.join(docker_ports),
+            create_datetime
+        )
+
+        cprint.blue(self.report_string)
 
     def exec_cmd(self, container_name, cmd):
 
@@ -154,9 +180,6 @@ class DeployMySQL(DeploymentComponent):
         )
         client.api.start(mysql_container)
 
-        # TODO: when (if) finished - move this to composite execute
-        self.inspect_after_start()
-
         print('Waiting for MySQL server starts...\r\n')
         sleep(7)
 
@@ -198,8 +221,6 @@ class DeployRabbitMQ(DeploymentComponent):
             networking_config=networking_config
         )
         client.api.start(rabbitmq_container)
-
-        self.inspect_after_start()
 
 
 # class DeployGraylog(DeploymentComponent):
@@ -405,32 +426,14 @@ class DeployFeedbackApi(DeploymentComponent):
         ]
         self.exec_cmd(self.container_name, server_run_commands)
 
+        # TODO: Finish this
         # self.manage_access_code()
-
-        self.inspect_after_start()
 
 
 class DeploySSO(DeploymentComponent):
 
     def create(self):
         print('\r\nStart deploying of SSO container.\r\n')
-
-        # with open('docker_files/sso_local_Dockerfile', mode="r") as dockerfile:
-        #     f = BytesIO(dockerfile.read().encode('utf-8'))
-        #     try:
-        #         for line in client.api.build(
-        #             fileobj=f,
-        #             nocache=False,
-        #             rm=True,
-        #             tag='{}_image'.format(self.container_name),
-        #             decode=True,
-        #             pull=True
-        #         ):
-        #             line = line.get('stream')
-        #             if line is not None:
-        #                 cprint.green(line)
-        #     except Exception:
-        #         raise IOError("Invalid Dockerfile!")
 
         networking_config = client.api.create_networking_config({
             DOCKER_NETWORK['NETWORK_NAME']: client.api.create_endpoint_config(
@@ -512,8 +515,6 @@ class DeploySSO(DeploymentComponent):
         ]
         self.exec_cmd(self.container_name, server_commands)
 
-        self.inspect_after_start()
-
 
 class DeployXircleFeebackBundle(DeploymentComponent):
     def create(self):
@@ -521,7 +522,6 @@ class DeployXircleFeebackBundle(DeploymentComponent):
 
         local_dir = GIT_REPOSITORIES['feedback_ui']['local_dir']
 
-        # TODO: move it to external file
         xircl_fb_config = """
 /* -----------------------------------------------------------------
 //
@@ -530,10 +530,10 @@ class DeployXircleFeebackBundle(DeploymentComponent):
 // ----------------------------------------------------------------- */
 
 // SSO URL
-window.ssoApiUrl = 'http://{sso_url}:{sso_docker_port}/api/';
+window.ssoApiUrl = 'http://localhost:{sso_local_port}/api/';
 
 // Feedback REST API URL
-window.feedbackV2ApiUrl = 'http://{fbapi_url}:{fbapi_docker_port}/';
+window.feedbackV2ApiUrl = 'http://localhost:{fbapi_local_port}/';
 
 // Xircl BaseURL
 window.xirclxirclfeedback = '/';
@@ -541,12 +541,8 @@ window.xirclxirclfeedback = '/';
 // Analytics
 window.googleAnalyticsEnabled = false;
 window.uxMetricsEnabled = false;""".format(
-            # sso_url=CONTAINERS['SSO']['NETWORK']['HOSTNAME'][0],
-            sso_url=CONTAINERS['SSO']['NETWORK']['IPV4_ADDRESS'],
-            sso_docker_port=CONTAINERS['SSO']['DOCKER_PORT'],
-            # fbapi_url=CONTAINERS['FEEDBACK_API']['NETWORK']['HOSTNAME'][0],
-            fbapi_url=CONTAINERS['FEEDBACK_API']['NETWORK']['IPV4_ADDRESS'],
-            fbapi_docker_port=CONTAINERS['FEEDBACK_API']['DOCKER_PORT']
+            sso_local_port=CONTAINERS['SSO']['LOCAL_PORT'],
+            fbapi_local_port=CONTAINERS['FEEDBACK_API']['LOCAL_PORT']
         )
 
         with open(
@@ -616,4 +612,10 @@ class DeploymentComposite(object):
         if self.components:
             for c in self.components:
                 c.create()
-                # c.inspect_after_start()
+                c.inspect_after_start()
+
+            report = '\n------------------------------------------'.join(
+                [c.report_string for c in self.components]
+            )
+
+            cprint.cyan(report)

@@ -16,9 +16,9 @@ except ImportError:
 
 def run_deployment():
 
-    # prepare_network()
+    prepare_network()
     prepare_images()
-    # clone_repositories()
+    clone_repositories()
 
     deployment_composite = DeploymentComposite()
 
@@ -65,10 +65,10 @@ def run_deployment():
     # )
 
     deployment_composite.append_component([
-        # mysql_dep,
-        # rabbitmq_dep,
-        # sso_dep,
-        # feedback_dep,
+        mysql_dep,
+        rabbitmq_dep,
+        sso_dep,
+        feedback_dep,
         xircle_feedback_bundle_dep
     ])
 
