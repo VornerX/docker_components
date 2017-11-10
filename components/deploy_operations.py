@@ -16,9 +16,9 @@ except ImportError:
 
 def run_deployment():
 
-    prepare_network()
+    # prepare_network()
     prepare_images()
-    clone_repositories()
+    # clone_repositories()
 
     deployment_composite = DeploymentComposite()
 
@@ -26,8 +26,7 @@ def run_deployment():
         container_name=CONTAINERS['MYSQL']['CONTAINER_NAME'],
         image_name=CONTAINERS['MYSQL']['IMAGE_NAME'],
         docker_port=CONTAINERS['MYSQL']['DOCKER_PORT'],
-        localhost_port=CONTAINERS['MYSQL']['LOCAL_PORT'],
-        mysql_pwd=CONTAINERS['MYSQL']['MYSQL_ROOT_PASSWORD']
+        localhost_port=CONTAINERS['MYSQL']['LOCAL_PORT']
     )
 
     rabbitmq_dep = DeployRabbitMQ(
@@ -66,10 +65,10 @@ def run_deployment():
     # )
 
     deployment_composite.append_component([
-        mysql_dep,
-        rabbitmq_dep,
-        sso_dep,
-        feedback_dep,
+        # mysql_dep,
+        # rabbitmq_dep,
+        # sso_dep,
+        # feedback_dep,
         xircle_feedback_bundle_dep
     ])
 

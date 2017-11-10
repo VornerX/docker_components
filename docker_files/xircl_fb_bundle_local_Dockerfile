@@ -1,7 +1,6 @@
 FROM node:6
 
 WORKDIR /XircleFeedbackBundle
-
-# CMD [ "npm", "install" ]
-# CMD [ "npm", "run", "bower-install" ]
-# CMD [ "npm", "start" ]
+ENTRYPOINT [ "npm", "install" ]
+ENTRYPOINT [ "npm", "run", "bower-install" ]
+ENTRYPOINT [ "npm", "start" ]

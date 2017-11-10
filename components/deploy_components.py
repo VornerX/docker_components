@@ -21,18 +21,19 @@ def prepare_images():
         if 'IMAGE_NAME' in v.keys()
     ]
     for image_name in images_to_prepare:
-        for s in client.api.pull(image_name, stream=True):
-            resp = json.loads(s.decode().replace('\r\n', ''))
-            if 'progressDetail' not in resp.keys():
-                print(str.format('[{}]', resp['status']))
-            else:
-                print(str.format('[{}] Progress: {}',
-                                 resp['status'], resp['progressDetail']))
+        if image_name != 'custom':
+            for s in client.api.pull(image_name, stream=True):
+                resp = json.loads(s.decode().replace('\r\n', ''))
+                if 'progressDetail' not in resp.keys():
+                    print(str.format('[{}]', resp['status']))
+                else:
+                    print(str.format('[{}] Progress: {}',
+                                     resp['status'], resp['progressDetail']))
 
 
 def prepare_network():
     for net in client.api.networks():
-        if net['Name'] == DOCKER_NETWORK['NETWORK_NAME']:
+        if net['Name'] in (DOCKER_NETWORK['NETWORK_NAME'], 'deployer_Network'):
             client.api.remove_network(net['Id'])
 
     ipam_pool = docker.types.IPAMPool(
@@ -85,27 +86,54 @@ class DeploymentComponent(ABC):
         else:
             raise TypeError("'cmd' parameter must me list or str.")
 
+    def build_links(self, container_name=None):
+        con_name = container_name if container_name else self.container_name
+        links = {
+            settings['CONTAINER_NAME']: settings['CONTAINER_NAME']
+            for srv, settings in CONTAINERS.items()
+            if settings['CONTAINER_NAME'] != con_name
+        }
+
+        return links
+
+    def build_image_from_dockerfile(self, dockerfile):
+        """ Builds image and returns a tag for using in container creation """
+        with open(os.path.join('docker_files', dockerfile),
+                  mode="r") as dockerfile:
+            tag = str.format('{}_image', self.container_name)
+            f = BytesIO(dockerfile.read().encode('utf-8'))
+            try:
+                for line in client.api.build(
+                    fileobj=f,
+                    nocache=False,
+                    rm=True,
+                    tag=tag,
+                    decode=True,
+                    pull=True
+                ):
+                    line = line.get('stream')
+                    if line is not None:
+                        cprint.green(line)
+
+                return tag
+
+            except Exception:
+                raise IOError("Invalid Dockerfile!")
+
     @abstractmethod
     def create(self):
         pass
 
 
 class DeployMySQL(DeploymentComponent):
-
-    def __init__(self, container_name, image_name, docker_port, localhost_port,
-                 mysql_pwd):
-        self._mysql_pwd = mysql_pwd
-        super().__init__(
-            container_name, image_name, docker_port, localhost_port)
-
     def create(self):
         print('\r\nStart deploying of MySQL container.\r\n')
 
         networking_config = client.api.create_networking_config({
-            'deployer_network': client.api.create_endpoint_config(
+            DOCKER_NETWORK['NETWORK_NAME']: client.api.create_endpoint_config(
                 ipv4_address=CONTAINERS['MYSQL']['NETWORK']['IPV4_ADDRESS'],
                 aliases=CONTAINERS['MYSQL']['NETWORK']['HOSTNAME'],
-                links={'deployer_rabbitmq': 'deployer_rabbitmq'}
+                links=self.build_links()
             )
         })
 
@@ -113,7 +141,8 @@ class DeployMySQL(DeploymentComponent):
             name=self.container_name,
             image=self.image_name,
             environment={
-                'MYSQL_ROOT_PASSWORD': self._mysql_pwd,
+                'MYSQL_ROOT_PASSWORD': CONTAINERS['MYSQL'][
+                    'MYSQL_ROOT_PASSWORD'],
             },
             ports=[self.docker_port],
             host_config=client.api.create_host_config(port_bindings={
@@ -125,21 +154,13 @@ class DeployMySQL(DeploymentComponent):
         )
         client.api.start(mysql_container)
 
-        # client.api.connect_container_to_network(
-        #     net_id='deployer_network', container=self.container_name,
-        #     aliases=[self.container_name]
-        #     # links={
-        #     #     '1_deployer_elastic_search': 'elasticsearch',
-        #     #     '1_deployer_mongodb': 'mongodb'
-        #     # }
-        # )
-
         # TODO: when (if) finished - move this to composite execute
         self.inspect_after_start()
 
         print('Waiting for MySQL server starts...\r\n')
         sleep(7)
 
+        # TODO: move this to separate method with mysqlclient actions
         for d in ('sso', 'feedback', 'feedback_default', 'demo'):
             self.exec_cmd(
                 container_name=self.container_name,
@@ -157,10 +178,10 @@ class DeployMySQL(DeploymentComponent):
 class DeployRabbitMQ(DeploymentComponent):
     def create(self):
         networking_config = client.api.create_networking_config({
-            'deployer_network': client.api.create_endpoint_config(
-                ipv4_address='192.168.1.3',
-                aliases=['deployer_rabbitmq', 'rabbitmqhost'],
-                links={'deployer_mysql57': 'deployer_mysql57'}
+            DOCKER_NETWORK['NETWORK_NAME']: client.api.create_endpoint_config(
+                ipv4_address=CONTAINERS['RABBITMQ']['NETWORK']['IPV4_ADDRESS'],
+                aliases=CONTAINERS['RABBITMQ']['NETWORK']['HOSTNAME'],
+                links=self.build_links()
             )
         })
         rabbitmq_container = client.api.create_container(
@@ -181,56 +202,56 @@ class DeployRabbitMQ(DeploymentComponent):
         self.inspect_after_start()
 
 
-class DeployGraylog(DeploymentComponent):
-    def create(self):
-        print('Start deploying of Graylog container.\r\n')
-
-        # elastic search
-        es_container = client.api.create_container(
-            name='1_deployer_elastic_search',
-            image='elasticsearch:2',
-            environment={},
-            ports=[9200],
-            host_config=client.api.create_host_config(port_bindings={
-                9200: 9200
-            }),
-        )
-        client.api.start(es_container)
-
-        # mongodb
-        mongodb_container = client.api.create_container(
-            name='1_deployer_mongodb',
-            image='mongo:2.6',
-            environment={},
-            ports=[27017],
-            host_config=client.api.create_host_config(port_bindings={
-                27017: 27020
-            }),
-        )
-        client.api.start(mongodb_container)
-
-        # graylog
-        graylog_container = client.api.create_container(
-            name=self.container_name,
-            image=self.image_name,
-            environment={
-                'GRAYLOG_WEB_ENDPOINT_URI': 'http://127.0.0.1:9000/api'
-            },
-            ports=[self.docker_port],
-            host_config=client.api.create_host_config(port_bindings={
-                self.docker_port: self.localhost_port,
-                '12201/udp': '12201/udp',
-            }),
-        )
-        client.api.start(graylog_container)
-
-        self.inspect_after_start()
+# class DeployGraylog(DeploymentComponent):
+#     def create(self):
+#         print('Start deploying of Graylog container.\r\n')
+#
+#         # elastic search
+#         es_container = client.api.create_container(
+#             name='1_deployer_elastic_search',
+#             image='elasticsearch:2',
+#             environment={},
+#             ports=[9200],
+#             host_config=client.api.create_host_config(port_bindings={
+#                 9200: 9200
+#             }),
+#         )
+#         client.api.start(es_container)
+#
+#         # mongodb
+#         mongodb_container = client.api.create_container(
+#             name='1_deployer_mongodb',
+#             image='mongo:2.6',
+#             environment={},
+#             ports=[27017],
+#             host_config=client.api.create_host_config(port_bindings={
+#                 27017: 27020
+#             }),
+#         )
+#         client.api.start(mongodb_container)
+#
+#         # graylog
+#         graylog_container = client.api.create_container(
+#             name=self.container_name,
+#             image=self.image_name,
+#             environment={
+#                 'GRAYLOG_WEB_ENDPOINT_URI': 'http://127.0.0.1:9000/api'
+#             },
+#             ports=[self.docker_port],
+#             host_config=client.api.create_host_config(port_bindings={
+#                 self.docker_port: self.localhost_port,
+#                 '12201/udp': '12201/udp',
+#             }),
+#         )
+#         client.api.start(graylog_container)
+#
+#         self.inspect_after_start()
 
 
 class DeployFeedbackApi(DeploymentComponent):
 
     def manage_access_code(self):
-        # TODO: refactor this
+        # TODO: Use mysqlclient instead of this command line shit
         cprint.green('Generating access code')
 
         check_access_code_cmd = """mysql --skip-column-names --silent -e "select token from sso.app_token where id=1;" """
@@ -270,28 +291,42 @@ class DeployFeedbackApi(DeploymentComponent):
 
     def create(self):
         print('Start deploying of Feedback API container.\r\n')
-        with open('docker_files/feedback_local_Dockerfile',
-                  mode="r") as dockerfile:
-            f = BytesIO(dockerfile.read().encode('utf-8'))
-            try:
-                for line in client.api.build(
-                    fileobj=f,
-                    nocache=False,
-                    rm=True,
-                    tag='{}_image'.format(self.container_name),
-                    decode=True,
-                    pull=True
-                ):
-                    line = line.get('stream')
-                    if line is not None:
-                        cprint.green(line)
-            except Exception:
-                raise IOError("Invalid Dockerfile!")
+
+        # TODO: move Dockerfile processing to separate method at base class
+        # with open('docker_files/feedback_local_Dockerfile',
+        #           mode="r") as dockerfile:
+        #     f = BytesIO(dockerfile.read().encode('utf-8'))
+        #     try:
+        #         for line in client.api.build(
+        #             fileobj=f,
+        #             nocache=False,
+        #             rm=True,
+        #             tag='{}_image'.format(self.container_name),
+        #             decode=True,
+        #             pull=True
+        #         ):
+        #             line = line.get('stream')
+        #             if line is not None:
+        #                 cprint.green(line)
+        #     except Exception:
+        #         raise IOError("Invalid Dockerfile!")
+
+        networking_config = client.api.create_networking_config({
+            DOCKER_NETWORK['NETWORK_NAME']: client.api.create_endpoint_config(
+                ipv4_address=CONTAINERS[
+                    'FEEDBACK_API']['NETWORK']['IPV4_ADDRESS'],
+                aliases=CONTAINERS['FEEDBACK_API']['NETWORK']['HOSTNAME'],
+                links=self.build_links()
+            )
+        })
+
+        image_tag = self.build_image_from_dockerfile(
+            'feedback_local_Dockerfile')
 
         local_dir = GIT_REPOSITORIES['feedback-api-python']['local_dir']
 
         feedback_container = client.api.create_container(
-            image='{}_image'.format(self.container_name),
+            image=image_tag,
             name=self.container_name,
             stdin_open=True, tty=True,
             ports=[self.docker_port],
@@ -307,14 +342,16 @@ class DeployFeedbackApi(DeploymentComponent):
             environment={
                 'CONTAINER': 'feedback',  # db name
                 'GRAYLOG_IP': 'localhost',
-                'MYSQL_HOST': '172.17.0.2',  # 172.17.0.2
-                'SSO_CONTAINER': 'deployer_sso',
-                'SSO_PORT': '10180',
-                'SSO_IP': '172.17.0.4',
-                'MYSQL_PWD': 'root',
-                'PORT_TO_DEPLOY': '10181',
-                'RABBIT_MQ_IP': '172.17.0.3',
-            }
+                'MYSQL_HOST': CONTAINERS['MYSQL']['NETWORK']['HOSTNAME'][0],
+                'SSO_CONTAINER': CONTAINERS['SSO']['CONTAINER_NAME'],
+                'SSO_PORT': CONTAINERS['SSO']['LOCAL_PORT'],
+                'SSO_IP': CONTAINERS['SSO']['NETWORK']['HOSTNAME'][0],
+                'MYSQL_PWD': CONTAINERS['MYSQL']['MYSQL_ROOT_PASSWORD'],
+                'PORT_TO_DEPLOY': CONTAINERS['FEEDBACK_API']['LOCAL_PORT'],
+                'RABBIT_MQ_IP': CONTAINERS[
+                    'RABBITMQ']['NETWORK']['HOSTNAME'][0],
+            },
+            networking_config=networking_config
         )
 
         client.api.start(feedback_container)
@@ -377,27 +414,38 @@ class DeploySSO(DeploymentComponent):
 
     def create(self):
         print('\r\nStart deploying of SSO container.\r\n')
-        with open('docker_files/sso_local_Dockerfile', mode="r") as dockerfile:
-            f = BytesIO(dockerfile.read().encode('utf-8'))
-            try:
-                for line in client.api.build(
-                    fileobj=f,
-                    nocache=False,
-                    rm=True,
-                    tag='{}_image'.format(self.container_name),
-                    decode=True,
-                    pull=True
-                ):
-                    line = line.get('stream')
-                    if line is not None:
-                        cprint.green(line)
-            except Exception:
-                raise IOError("Invalid Dockerfile!")
+
+        # with open('docker_files/sso_local_Dockerfile', mode="r") as dockerfile:
+        #     f = BytesIO(dockerfile.read().encode('utf-8'))
+        #     try:
+        #         for line in client.api.build(
+        #             fileobj=f,
+        #             nocache=False,
+        #             rm=True,
+        #             tag='{}_image'.format(self.container_name),
+        #             decode=True,
+        #             pull=True
+        #         ):
+        #             line = line.get('stream')
+        #             if line is not None:
+        #                 cprint.green(line)
+        #     except Exception:
+        #         raise IOError("Invalid Dockerfile!")
+
+        networking_config = client.api.create_networking_config({
+            DOCKER_NETWORK['NETWORK_NAME']: client.api.create_endpoint_config(
+                ipv4_address=CONTAINERS['SSO']['NETWORK']['IPV4_ADDRESS'],
+                aliases=CONTAINERS['SSO']['NETWORK']['HOSTNAME'],
+                links=self.build_links()
+            )
+        })
+
+        image_tag = self.build_image_from_dockerfile('sso_local_Dockerfile')
 
         local_dir = GIT_REPOSITORIES['sso']['local_dir']
 
         sso_container = client.api.create_container(
-            image='{}_image'.format(self.container_name),
+            image=image_tag,
             name=self.container_name,
             stdin_open=True, tty=True,
             ports=[self.docker_port],
@@ -415,11 +463,12 @@ class DeploySSO(DeploymentComponent):
                 # TODO: autodeployment_settings.py inside SSO project.
                 # TODO: rename it to DB_NAME or something like this.
                 'CONTAINER': 'sso',
-                'MYSQL_HOST': '172.17.0.2',
-                'MYSQL_PWD': 'root'
+                'MYSQL_HOST': CONTAINERS['MYSQL']['NETWORK']['HOSTNAME'][0],
+                'MYSQL_PWD': CONTAINERS['MYSQL']['MYSQL_ROOT_PASSWORD']
             },
             hostname='sso',
             user='root',
+            networking_config=networking_config
         )
 
         client.api.start(sso_container)
@@ -481,10 +530,10 @@ class DeployXircleFeebackBundle(DeploymentComponent):
 // ----------------------------------------------------------------- */
 
 // SSO URL
-window.ssoApiUrl = 'http://{sso_url}/api/';
+window.ssoApiUrl = 'http://{sso_url}:{sso_docker_port}/api/';
 
 // Feedback REST API URL
-window.feedbackV2ApiUrl = 'http://{fbapi_url}/';
+window.feedbackV2ApiUrl = 'http://{fbapi_url}:{fbapi_docker_port}/';
 
 // Xircl BaseURL
 window.xirclxirclfeedback = '/';
@@ -492,7 +541,12 @@ window.xirclxirclfeedback = '/';
 // Analytics
 window.googleAnalyticsEnabled = false;
 window.uxMetricsEnabled = false;""".format(
-            sso_url='172.17.0.4', fbapi_url='172.17.0.3'
+            # sso_url=CONTAINERS['SSO']['NETWORK']['HOSTNAME'][0],
+            sso_url=CONTAINERS['SSO']['NETWORK']['IPV4_ADDRESS'],
+            sso_docker_port=CONTAINERS['SSO']['DOCKER_PORT'],
+            # fbapi_url=CONTAINERS['FEEDBACK_API']['NETWORK']['HOSTNAME'][0],
+            fbapi_url=CONTAINERS['FEEDBACK_API']['NETWORK']['IPV4_ADDRESS'],
+            fbapi_docker_port=CONTAINERS['FEEDBACK_API']['DOCKER_PORT']
         )
 
         with open(
@@ -501,27 +555,20 @@ window.uxMetricsEnabled = false;""".format(
         ) as config_js:
             config_js.write(xircl_fb_config)
 
-        with open(
-            'docker_files/xircl_fb_bundle_local_Dockerfile', mode="r"
-        ) as dockerfile:
-            f = BytesIO(dockerfile.read().encode('utf-8'))
-            try:
-                for line in client.api.build(
-                    fileobj=f,
-                    nocache=False,
-                    rm=True,
-                    tag='{}_image'.format(self.container_name),
-                    decode=True,
-                    pull=True
-                ):
-                    line = line.get('stream')
-                    if line is not None:
-                        cprint.green(line)
-            except Exception:
-                raise IOError("Invalid Dockerfile!")
+        networking_config = client.api.create_networking_config({
+            DOCKER_NETWORK['NETWORK_NAME']: client.api.create_endpoint_config(
+                ipv4_address=CONTAINERS[
+                    'XIRCL_FB_BUNDLE']['NETWORK']['IPV4_ADDRESS'],
+                aliases=CONTAINERS['XIRCL_FB_BUNDLE']['NETWORK']['HOSTNAME'],
+                links=self.build_links()
+            )
+        })
+
+        image_tag = self.build_image_from_dockerfile(
+            'xircl_fb_bundle_local_Dockerfile')
 
         xircl_fb_container = client.api.create_container(
-            image='{}_image'.format(self.container_name),
+            image=image_tag,
             name=self.container_name,
             stdin_open=True, tty=True,
             ports=[self.docker_port],
@@ -536,6 +583,7 @@ window.uxMetricsEnabled = false;""".format(
             ),
             hostname='xircl_fb',
             user='root',
+            networking_config=networking_config
         )
 
         client.api.start(xircl_fb_container)
