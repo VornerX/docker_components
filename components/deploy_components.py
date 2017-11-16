@@ -4,7 +4,8 @@ from io import BytesIO
 import json
 import os
 import docker
-from docker import types
+from docker import types  # noqa
+from components.mysql_components import raw_sql, wait_for_mysql_starts
 from helpers.color_print import ColorPrint
 from config import (
     DOCKER_NETWORK, CONTAINERS, GIT_REPOSITORIES, HOME_DEPLOYMENT_DIR
@@ -180,22 +181,14 @@ class DeployMySQL(DeploymentComponent):
         )
         client.api.start(mysql_container)
 
-        print('Waiting for MySQL server starts...\r\n')
-        sleep(7)
+        wait_for_mysql_starts()
 
-        # TODO: move this to separate method with mysqlclient actions
         for d in ('sso', 'feedback', 'feedback_default', 'demo'):
             self.exec_cmd(
                 container_name=self.container_name,
                 cmd=str.format(
                     'mysql -u root -e "create database if not exists {};"', d)
             )
-
-
-        # client.api.kill(mysql_container_id)
-        # client.api.wait(mysql_container_id)
-        # client.api.remove_container(mysql_container_id)
-        # print(mysql_container)
 
 
 class DeployRabbitMQ(DeploymentComponent):
@@ -207,6 +200,7 @@ class DeployRabbitMQ(DeploymentComponent):
                 links=self.build_links()
             )
         })
+
         rabbitmq_container = client.api.create_container(
             name=self.container_name,
             image=self.image_name,
@@ -271,66 +265,38 @@ class DeployRabbitMQ(DeploymentComponent):
 
 class DeployFeedbackApi(DeploymentComponent):
 
-    def manage_access_code(self):
-        # TODO: Use mysqlclient instead of this command line shit
-        cprint.green('Generating access code')
+    def _manage_access_code(self):
+        cprint.green('Checking of access_code in DB...')
+        result = raw_sql(
+            "SELECT token AS access_code FROM sso.app_token WHERE id = 1;")
 
-        check_access_code_cmd = """mysql --skip-column-names --silent -e "select token from sso.app_token where id=1;" """
-
-        access_code = None
-
-        response = self.exec_cmd(self.container_name, check_access_code_cmd)
-        if response:
-            for r in response:
-                if r:
-                    access_code = r.decode()
-
-        if not access_code:
+        if not result:
+            cprint.yellow('access_code not found in DB. Generating...')
             self.exec_cmd(
-                'deployer_sso', 'sso-mgm accesscode -y -e 1 -a feedback')
+                CONTAINERS['SSO']['CONTAINER_NAME'],
+                'sso-mgm accesscode -y -e 1 -a feedback')
+            result = raw_sql(
+                "SELECT token AS access_code FROM sso.app_token WHERE id = 1;")
+            if not result:
+                raise Exception(
+                    'Access code still not found in DB after generation! '
+                    'Something goes wrong.'
+                )
 
-        response = self.exec_cmd(self.container_name, check_access_code_cmd)
-        if response:
-            for r in response:
-                if r:
-                    access_code = r.decode()
-
-        if not access_code:
-            raise Exception('Access code empty. Something goes wrong.')
+        access_code = result[0]['access_code']
 
         access_code_filepath = os.path.join(
-            HOME_DEPLOYMENT_DIR, 'feedback_api', '.sso_access_code')
+            HOME_DEPLOYMENT_DIR, 'feedback-api-python', 'feedback_api',
+            '.sso_access_code')
 
         with open(file=access_code_filepath, mode='w') as access_code_file:
             access_code_file.write(access_code)
 
-        response = self.exec_cmd(
+        self.exec_cmd(
             self.container_name, 'fbapi-mgm generate_token')
-
-        for r in response:
-            cprint.cyan(r.decode())
 
     def create(self):
         print('Start deploying of Feedback API container.\r\n')
-
-        # TODO: move Dockerfile processing to separate method at base class
-        # with open('docker_files/feedback_local_Dockerfile',
-        #           mode="r") as dockerfile:
-        #     f = BytesIO(dockerfile.read().encode('utf-8'))
-        #     try:
-        #         for line in client.api.build(
-        #             fileobj=f,
-        #             nocache=False,
-        #             rm=True,
-        #             tag='{}_image'.format(self.container_name),
-        #             decode=True,
-        #             pull=True
-        #         ):
-        #             line = line.get('stream')
-        #             if line is not None:
-        #                 cprint.green(line)
-        #     except Exception:
-        #         raise IOError("Invalid Dockerfile!")
 
         networking_config = client.api.create_networking_config({
             DOCKER_NETWORK['NETWORK_NAME']: client.api.create_endpoint_config(
@@ -426,8 +392,7 @@ class DeployFeedbackApi(DeploymentComponent):
         ]
         self.exec_cmd(self.container_name, server_run_commands)
 
-        # TODO: Finish this
-        # self.manage_access_code()
+        self._manage_access_code()
 
 
 class DeploySSO(DeploymentComponent):
@@ -614,7 +579,7 @@ class DeploymentComposite(object):
                 c.create()
                 c.inspect_after_start()
 
-            report = '\n------------------------------------------'.join(
+            report = '\r\n------------------------------------------\n'.join(
                 [c.report_string for c in self.components]
             )
 

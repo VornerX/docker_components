@@ -40,6 +40,7 @@ CONTAINERS = {
             'HOSTNAME': ['mysqlhost']
         },
         'MYSQL_ROOT_PASSWORD': 'root',
+        'WAIT_FOR_START_TIMEOUT': 10  # seconds
     },
 
     'RABBITMQ': {
