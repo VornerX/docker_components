@@ -95,19 +95,21 @@ class DeploymentComponent(ABC):
 
         cprint.blue(self.report_string)
 
-    def exec_cmd(self, container_name, cmd):
+    def exec_cmd(self, container_name, cmd, detach=False):
 
         container = client.containers.get(container_name)
 
         if isinstance(cmd, list):
             response = container.exec_run(
-                cmd="bash -c '" + " ".join(cmd) + "'", stream=True)
+                cmd="bash -c '" + " ".join(cmd) + "'", stream=True,
+                detach=detach)
             for r in response:
                 cprint.yellow(r.decode())
 
         elif isinstance(cmd, str):
             response = container.exec_run(
-                cmd=str.format("bash -c '{}'", cmd), stream=True)
+                cmd=str.format("bash -c '{}'", cmd), stream=True,
+                detach=detach)
             for r in response:
                 cprint.yellow(r.decode())
         else:
@@ -548,6 +550,12 @@ window.uxMetricsEnabled = false;""".format(
         )
 
         client.api.start(xircl_fb_container)
+
+        self.exec_cmd(
+            self.container_name,
+            'npm install && npm run bower-install'
+        )
+        self.exec_cmd(self.container_name, 'npm start', detach=True)
 
 
 class DeploymentComposite(object):
